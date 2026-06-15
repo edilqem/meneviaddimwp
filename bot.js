@@ -11,6 +11,8 @@ const PHONE_NUMBER = '994507390019';
 
 const AUTH_FOLDER = '/data/auth';
 
+let pairingRequested = false;
+
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
 
@@ -21,7 +23,8 @@ async function startBot() {
   });
 
   // Qeydiyyatdan keçməyibsə - pairing kodu istə
-  if (!sock.authState.creds.registered) {
+  if (!sock.authState.creds.registered && !pairingRequested) {
+    pairingRequested = true;
     setTimeout(async () => {
       try {
         const code = await sock.requestPairingCode(PHONE_NUMBER);
