@@ -9,8 +9,9 @@ const PORT = process.env.PORT || 3000;
 
 let currentQR = null;
 let connectionStatus = 'Başlanır...';
+let reconnectTimer = null; // <-- üst-üstə düşən reconnect-lərin qarşısını alır
 
-// QR kodu brauzerdə göstərmək üçün sadə HTTP server
+// ---------- QR kodu brauzerdə göstərmək üçün sadə HTTP server ----------
 http.createServer(async (req, res) => {
   if (currentQR) {
     try {
@@ -44,6 +45,16 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, () => console.log(`🌐 QR server işləyir, port: ${PORT}`));
 
+// ---------- Reconnect-i yalnız BİR DƏFƏ planlaşdıran funksiya ----------
+function scheduleReconnect() {
+  if (reconnectTimer) return; // artıq planlanıb, ikincisini yaratma
+  console.log('🔄 3 saniyəyə yenidən qoşulacaq...');
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startBot();
+  }, 3000);
+}
+
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
   const { version } = await fetchLatestBaileysVersion();
@@ -53,6 +64,9 @@ async function startBot() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     version,
+    markOnlineOnConnect: false,             // botu daim "online" göstərmir
+    syncFullHistory: false,                 // köhnə tarixçəni çəkmir, yüngül olur
+    browser: ['MeneviAddim', 'Chrome', '1.0.0'], // sabit cihaz adı
   });
 
   sock.ev.on('connection.update', (update) => {
@@ -69,15 +83,21 @@ async function startBot() {
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      connectionStatus = 'Bağlantı bağlandı, yenidən qoşulur...';
+      const loggedOut = statusCode === DisconnectReason.loggedOut; // 401
+      connectionStatus = 'Bağlantı bağlandı...';
       console.log('⚠️ Bağlantı bağlandı. Status code:', statusCode);
       console.log('⚠️ Xəta detalları:', JSON.stringify(lastDisconnect?.error?.output?.payload || lastDisconnect?.error?.message || lastDisconnect?.error));
-      console.log('⚠️ Yenidən qoşulma:', shouldReconnect);
-      if (shouldReconnect) {
-        setTimeout(() => startBot(), 3000);
+
+      if (loggedOut) {
+        // 401 = logout və ya conflict -> yenidən qoşulmaq mənasızdır (loop yaranar)
+        console.log('🔒 Logout/conflict aşkarlandı — yenidən qoşulmur. Yeni QR lazımdır.');
+        currentQR = null;
+        connectionStatus = 'Logout edilib - yenidən QR lazımdır (servisi restart et)';
+      } else {
+        scheduleReconnect();
       }
     } else if (connection === 'open') {
+      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       currentQR = null;
       connectionStatus = 'Qoşuldu ✅';
       console.log('✅ WhatsApp-a qoşuldu!');
@@ -86,10 +106,10 @@ async function startBot() {
 
   sock.ev.on('creds.update', saveCreds);
 
-  // Gələn mesajları izlə - ID-ləri tapmaq üçün
+  // ---------- Gələn mesajları izlə ----------
   sock.ev.on('messages.upsert', async ({ messages }) => {
-    const msg = messages[0];
-    if (!msg.message || msg.key.fromMe) return;
+    const msg = messages?.[0];
+    if (!msg?.message || msg.key.fromMe) return;
 
     const from = msg.key.remoteJid;
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
@@ -102,5 +122,8 @@ async function startBot() {
   });
 }
 
-startBot();
+startBot().catch((e) => {
+  console.error('❌ startBot xətası:', e);
+  scheduleReconnect();
+});
 console.log('🚀 Bot başladılır...');
