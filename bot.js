@@ -21,7 +21,7 @@ const BACKUP_JID = ADMIN_JID;                    // həftəlik avtomatik backup 
 // DİQQƏT: @lid bot HESABINA bağlıdır. Bot nömrəsini dəyişdiyin üçün KÖHNƏ @lid-lər keçərsizdir.
 // Yeni bot qoşulandan sonra 507390019-dan bota mesaj yaz, logdakı "from: XXXX@lid"-i bura yaz:
 const ADMIN_LIDS = [
-  // '130739576279242', // = 994507390019? — yeni bot qoşulandan sonra TƏSDİQLƏ və aktivləşdir
+   '190258612326413', // = 994507390019? — yeni bot qoşulandan sonra TƏSDİQLƏ və aktivləşdir
 ];
 
 const ICAZE_COOLDOWN_DAYS = 21;                  // icazələr arası minimum gün (3 həftə)
