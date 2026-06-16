@@ -63,7 +63,19 @@ function loadData() {
     console.log(`📦 data.json yaradıldı (${seed.options.length} tapşırıq, üzvlər boş).`);
     return seed;
   }
-  return ensureStructure(JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
+  const data = ensureStructure(JSON.parse(fs.readFileSync(DB_FILE, 'utf8')));
+  // ÖZ-ÖZÜNƏ DÜZƏLMƏ: tapşırıqlar boşdursa, repo-dakı data.json-dan doldur (üzvlərə toxunmadan)
+  if (data.options.length === 0 && fs.existsSync(SEED_FILE)) {
+    try {
+      const seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'));
+      if (seed.options && seed.options.length) {
+        data.options = seed.options;
+        saveData(data);
+        console.log(`🔧 Tapşırıqlar boş idi — repo-dan ${data.options.length} tapşırıq yükləndi.`);
+      }
+    } catch (e) { console.log('Seed yükləmə xətası:', e.message); }
+  }
+  return data;
 }
 
 function saveData(data) {
