@@ -309,8 +309,12 @@ async function handleAdminCommand(text, replyJid) {
   }
 
   if (text === '/send') {
-    await doWeeklySend();
-    send(replyJid, '✅ Qrupa tapşırıqlar göndərildi!');
+    try {
+      await doWeeklySend();
+      send(replyJid, '✅ Qrupa tapşırıqlar göndərildi!');
+    } catch (e) {
+      send(replyJid, '❌ Göndərilmədi. Səbəb: ' + e.message);
+    }
     return true;
   }
 
@@ -362,10 +366,8 @@ async function handleAdminCommand(text, replyJid) {
 // =====================================================
 async function doWeeklySend() {
   const data = loadData();
-  if (!data.options.length || !Object.keys(data.members).length) {
-    console.log('Paylama: tapşırıq və ya üzv yoxdur.');
-    return;
-  }
+  if (!data.options.length) throw new Error('Tapşırıq siyahısı boşdur (data.json yoxlanmalıdır).');
+  if (!Object.keys(data.members).length) throw new Error('Heç bir üzv qeydiyyatdan keçməyib — bota /start yazan yoxdur.');
   let mesaj = `🌙 *Salam Aleykum!* 🤲\n\n*Bu həftəki tapşırıqlar:*\n\n`;
   for (const [key, member] of Object.entries(data.members)) {
     if (member.awaitingPenalty) {
@@ -378,13 +380,9 @@ async function doWeeklySend() {
   mesaj += `\nTapşırığını görmək üçün bota şəxsi /addim yazın.\n` +
     `Tamamladıqda /etdim ✅, tamamlamadıqda /etmedim ❌\n\n` +
     `🏖 İstirahət lazımdırsa /icaze yazıb həmin həftə tapşırığı etməyə bilərsiniz (icazədən sonra minimum 3 həftə keçməlidir).`;
-  try {
-    await sock.sendMessage(GROUP_JID, { text: mesaj });
-    saveData(data);
-    console.log('✅ Həftəlik tapşırıqlar göndərildi');
-  } catch (e) {
-    console.log('Paylama xətası:', e.message);
-  }
+  await sock.sendMessage(GROUP_JID, { text: mesaj }); // xəta olsa yuxarı ötürülür
+  saveData(data);
+  console.log('✅ Həftəlik tapşırıqlar göndərildi');
 }
 
 async function sendWeeklyReport() {
@@ -576,9 +574,9 @@ async function startBot() {
 // =====================================================
 // CƏDVƏLLƏR (Bakı vaxtı) — yalnız BİR DƏFƏ qurulur
 // =====================================================
-schedule.scheduleJob({ dayOfWeek: 5, hour: 12, minute: 0, tz: 'Asia/Baku' }, doWeeklySend);    // Cümə 12:00 — tapşırıq paylama
-schedule.scheduleJob({ dayOfWeek: 4, hour: 10, minute: 0, tz: 'Asia/Baku' }, sendReminder);     // Cümə axşamı 10:00 — xatırlatma
-schedule.scheduleJob({ dayOfWeek: 4, hour: 22, minute: 0, tz: 'Asia/Baku' }, sendWeeklyReport); // Cümə axşamı 22:00 — hesabat
+schedule.scheduleJob({ dayOfWeek: 5, hour: 12, minute: 0, tz: 'Asia/Baku' }, () => doWeeklySend().catch(e => console.log('Avtomatik paylama xətası:', e.message)));    // Cümə 12:00 — tapşırıq paylama
+schedule.scheduleJob({ dayOfWeek: 4, hour: 10, minute: 0, tz: 'Asia/Baku' }, () => sendReminder().catch(e => console.log('Xatırlatma xətası:', e.message)));         // Cümə axşamı 10:00 — xatırlatma
+schedule.scheduleJob({ dayOfWeek: 4, hour: 22, minute: 0, tz: 'Asia/Baku' }, () => sendWeeklyReport().catch(e => console.log('Hesabat xətası:', e.message)));        // Cümə axşamı 22:00 — hesabat
 
 startBot().catch((e) => { console.error('❌ startBot xətası:', e); scheduleReconnect(); });
 console.log('🚀 Bot başladılır...');
