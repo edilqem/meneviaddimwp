@@ -96,8 +96,10 @@ function wipeAuth() {
 
 // ---------- KÖMƏKÇİLƏR ----------
 function send(jid, text) {
-  if (!sock) return;
-  return sock.sendMessage(jid, { text }).catch(e => console.log('Göndərmə xətası:', e.message));
+  if (!sock) { console.log('⚠️ send: sock yoxdur, göndərilmədi ->', jid); return; }
+  return sock.sendMessage(jid, { text })
+    .then(() => { console.log('✉️ Göndərildi ->', jid); })
+    .catch(e => console.log('❌ Göndərmə xətası ->', jid, '|', e.message));
 }
 
 function bareNumber(jid) {
@@ -109,6 +111,8 @@ function bareNumber(jid) {
 // "Closing session" xətası verir və mesaj çatmır. Real PN JID-ə göndərmək lazımdır.
 function resolveReplyJid(msg, fallback) {
   const k = (msg && msg.key) || {};
+  // Admin "Özünə mesaj" (fromMe) — PN sahəsi olmur, lid onsuz da işləyir, axtarma
+  if (k.fromMe) return fallback;
   // 1) Mesaj key-də gələn PN sahələri (Baileys versiyasına görə biri mövcud olur)
   for (const f of [k.senderPn, k.participantPn, k.remoteJidAlt, k.participantAlt, k.peerRecipientPn]) {
     if (typeof f === 'string' && f.endsWith('@s.whatsapp.net')) return f;
