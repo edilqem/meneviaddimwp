@@ -104,6 +104,29 @@ function bareNumber(jid) {
   return (jid || '').split(':')[0].split('@')[0];
 }
 
+// @lid -> real telefon JID-i (@s.whatsapp.net). Cavab göndərə bilmək üçün vacibdir.
+// Yeni WhatsApp/Baileys DM-ləri @lid kimi gətirir; @lid-ə birbaşa göndərmək çox vaxt
+// "Closing session" xətası verir və mesaj çatmır. Real PN JID-ə göndərmək lazımdır.
+function resolveReplyJid(msg, fallback) {
+  const k = (msg && msg.key) || {};
+  // 1) Mesaj key-də gələn PN sahələri (Baileys versiyasına görə biri mövcud olur)
+  for (const f of [k.senderPn, k.participantPn, k.remoteJidAlt, k.participantAlt, k.peerRecipientPn]) {
+    if (typeof f === 'string' && f.endsWith('@s.whatsapp.net')) return f;
+  }
+  // 2) lidMapping cache (lid -> pn)
+  try {
+    const pn = sock && sock.signalRepository && sock.signalRepository.lidMapping
+      && sock.signalRepository.lidMapping.getPNForLID
+      && sock.signalRepository.lidMapping.getPNForLID(fallback);
+    if (typeof pn === 'string' && pn.endsWith('@s.whatsapp.net')) return pn;
+  } catch (e) {}
+  // 3) onsuz da @s.whatsapp.net-dirsə, fallback yaxşıdır
+  if (typeof fallback === 'string' && fallback.endsWith('@s.whatsapp.net')) return fallback;
+  // 4) tapılmadı — diaqnostika üçün key-i çap et, sonra lid-ə cəhd et
+  console.log('⚠️ PN tapılmadı, @lid-ə göndərilir. msg.key =', JSON.stringify(k));
+  return fallback;
+}
+
 function buildPool(data) {
   if (data.assignmentPool.length === 0) {
     data.assignmentPool = [...Array(data.options.length).keys()];
@@ -628,22 +651,26 @@ async function startBot() {
         const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
         if (!text) return;
 
-        // Admin müəyyənləşdirmə (@lid əsaslı)
+        // Cavab üçün real telefon JID-i (@lid-ə birbaşa göndərmək işləmir)
+        const replyJid = isGroup ? remoteJid : resolveReplyJid(msg, senderJid);
+
+        // Admin müəyyənləşdirmə (@lid əsaslı — dəyişmir)
         const isPrimaryAdmin = fromMe && !isGroup;                              // botun öz hesabından ("Özünə mesaj")
         const isSecondAdmin = !fromMe && !isGroup && ADMIN_LIDS.includes(senderNum); // admin @lid-i ilə DM
         const isAdminMsg = isPrimaryAdmin || isSecondAdmin;
 
-        console.log(`📩 "${text}" | from: ${senderJid} | grup: ${isGroup} | admin: ${isAdminMsg}`);
+        console.log(`📩 "${text}" | from: ${senderJid} | reply: ${replyJid} | grup: ${isGroup} | admin: ${isAdminMsg}`);
 
         if (isAdminMsg && text.startsWith('/')) {
-          const handled = await handleAdminCommand(text, remoteJid);
+          const handled = await handleAdminCommand(text, replyJid);
           if (handled) return;
         }
 
         if (fromMe) return;   // botun öz mesajları (admin əmri deyilsə) — keç
         if (isGroup) return;  // qrupdakı adi söhbətə qarışma
 
-        await handleMemberMessage(senderJid, msg.pushName || 'Üzv', text);
+        // Üzv qeydiyyatı və cavabı real telefon JID-i (replyJid) ilə — stabil və çatan
+        await handleMemberMessage(replyJid, msg.pushName || 'Üzv', text);
       } catch (e) {
         console.log('Mesaj emalı xətası:', e.message);
       }
