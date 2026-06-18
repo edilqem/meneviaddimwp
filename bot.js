@@ -36,6 +36,7 @@ let sock = null;
 let currentQR = null;
 let connectionStatus = 'Başlanır...';
 let reconnectTimer = null;
+let isStarting = false;     // eyni anda iki startBot qarşısını alır (conflict riski azalır)
 
 // ---------- DATABASE ----------
 function ensureStructure(d) {
@@ -79,6 +80,18 @@ function loadData() {
 
 function saveData(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+}
+
+// ---------- SESSIYA TƏMİZLƏMƏ (auto-recovery) ----------
+function wipeAuth() {
+  try {
+    if (fs.existsSync(AUTH_FOLDER)) {
+      fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+      console.log('🗑 Köhnə sessiya silindi (auto-recovery).');
+    }
+  } catch (e) {
+    console.log('Sessiya silmə xətası:', e.message);
+  }
 }
 
 // ---------- KÖMƏKÇİLƏR ----------
@@ -528,90 +541,119 @@ http.createServer(async (req, res) => {
 // =====================================================
 // RECONNECT QORUMASI
 // =====================================================
-function scheduleReconnect() {
+function scheduleReconnect(delay = 3000) {
   if (reconnectTimer) return;
-  console.log('🔄 3 saniyəyə yenidən qoşulacaq...');
-  reconnectTimer = setTimeout(() => { reconnectTimer = null; startBot(); }, 3000);
+  console.log(`🔄 ${Math.round(delay / 1000)} saniyəyə yenidən qoşulacaq...`);
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; startBot(); }, delay);
 }
 
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-  const { version } = await fetchLatestBaileysVersion();
+  if (isStarting) { console.log('⏳ startBot artıq işləyir, ikinci çağırış buraxıldı.'); return; }
+  isStarting = true;
 
-  sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    version,
-    markOnlineOnConnect: false,
-    syncFullHistory: false,
-    browser: ['MeneviAddim', 'Chrome', '1.0.0'],
-  });
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
+    const { version } = await fetchLatestBaileysVersion();
 
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect, qr } = update;
-    if (qr) {
-      currentQR = qr;
-      connectionStatus = 'QR kod hazırdır - skan et';
-      console.log('📱 QR KODU hazırdır - brauzerdə servis URL-inə gir');
-      qrcode.generate(qr, { small: true });
-    }
-    if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut = statusCode === DisconnectReason.loggedOut;
-      connectionStatus = 'Bağlantı bağlandı...';
-      console.log('⚠️ Status code:', statusCode, '|', JSON.stringify(lastDisconnect?.error?.output?.payload || lastDisconnect?.error?.message || ''));
-      if (loggedOut) {
-        console.log('🔒 Logout/conflict — yenidən qoşulmur. Yeni QR lazımdır.');
+    sock = makeWASocket({
+      auth: state,
+      logger: pino({ level: 'silent' }),
+      printQRInTerminal: false,
+      version,
+      markOnlineOnConnect: false,
+      syncFullHistory: false,
+      browser: ['MeneviAddim', 'Chrome', '1.0.0'],
+    });
+
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        currentQR = qr;
+        connectionStatus = 'QR kod hazırdır - skan et';
+        console.log('📱 QR KODU hazırdır - brauzerdə servis URL-inə gir');
+        qrcode.generate(qr, { small: true });
+      }
+
+      if (connection === 'close') {
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        connectionStatus = 'Bağlantı bağlandı...';
+        console.log('⚠️ Status code:', statusCode, '|', JSON.stringify(lastDisconnect?.error?.output?.payload || lastDisconnect?.error?.message || ''));
+
+        // FATAL hallar: sessiya etibarsızdır → SİL və təzə QR yarat (auto-recovery)
+        // loggedOut (401), connectionReplaced (440 conflict), badSession, multideviceMismatch
+        const fatal = (
+          statusCode === DisconnectReason.loggedOut ||
+          statusCode === DisconnectReason.connectionReplaced ||
+          statusCode === DisconnectReason.badSession ||
+          statusCode === DisconnectReason.multideviceMismatch ||
+          statusCode === 401 ||
+          statusCode === 440
+        );
+
+        if (fatal) {
+          console.log('🔒 Sessiya etibarsızdır (logout/conflict) — köhnə sessiya silinir, təzə QR yaradılacaq.');
+          currentQR = null;
+          connectionStatus = 'Sessiya yeniləndi - yeni QR hazırlanır...';
+          isStarting = false;          // yenidən başlamağa icazə ver
+          wipeAuth();                  // ölü sessiyanı sil
+          scheduleReconnect(3000);     // təzə başlanğıc → QR gələcək
+        } else {
+          // Müvəqqəti kəsilmə (internet, timeout) — sessiyanı silmə, sadəcə yenidən qoşul
+          isStarting = false;
+          scheduleReconnect(5000);
+        }
+      } else if (connection === 'open') {
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        isStarting = false;
         currentQR = null;
-        connectionStatus = 'Logout edilib - yenidən QR lazımdır';
-      } else {
-        scheduleReconnect();
+        connectionStatus = 'Qoşuldu ✅';
+        console.log('✅ WhatsApp-a qoşuldu!');
       }
-    } else if (connection === 'open') {
-      if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-      currentQR = null;
-      connectionStatus = 'Qoşuldu ✅';
-      console.log('✅ WhatsApp-a qoşuldu!');
-    }
-  });
+    });
 
-  sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    try {
-      if (type !== 'notify') return; // köhnə/tarixçə mesajlarını emal etmə
-      const msg = messages?.[0];
-      if (!msg?.message) return;
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      try {
+        if (type !== 'notify') return; // köhnə/tarixçə mesajlarını emal etmə
+        const msg = messages?.[0];
+        if (!msg?.message) return;
 
-      const remoteJid = msg.key.remoteJid;
-      const fromMe = msg.key.fromMe;
-      const isGroup = remoteJid.endsWith('@g.us');
-      const senderJid = isGroup ? (msg.key.participant || remoteJid) : remoteJid;
-      const senderNum = bareNumber(senderJid);
-      const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
-      if (!text) return;
+        const remoteJid = msg.key.remoteJid;
+        const fromMe = msg.key.fromMe;
+        const isGroup = remoteJid.endsWith('@g.us');
+        const senderJid = isGroup ? (msg.key.participant || remoteJid) : remoteJid;
+        const senderNum = bareNumber(senderJid);
+        const text = (msg.message.conversation || msg.message.extendedTextMessage?.text || '').trim();
+        if (!text) return;
 
-      // Admin müəyyənləşdirmə (@lid əsaslı)
-      const isPrimaryAdmin = fromMe && !isGroup;                              // botun öz hesabından ("Özünə mesaj")
-      const isSecondAdmin = !fromMe && !isGroup && ADMIN_LIDS.includes(senderNum); // admin @lid-i ilə DM
-      const isAdminMsg = isPrimaryAdmin || isSecondAdmin;
+        // Admin müəyyənləşdirmə (@lid əsaslı)
+        const isPrimaryAdmin = fromMe && !isGroup;                              // botun öz hesabından ("Özünə mesaj")
+        const isSecondAdmin = !fromMe && !isGroup && ADMIN_LIDS.includes(senderNum); // admin @lid-i ilə DM
+        const isAdminMsg = isPrimaryAdmin || isSecondAdmin;
 
-      console.log(`📩 "${text}" | from: ${senderJid} | grup: ${isGroup} | admin: ${isAdminMsg}`);
+        console.log(`📩 "${text}" | from: ${senderJid} | grup: ${isGroup} | admin: ${isAdminMsg}`);
 
-      if (isAdminMsg && text.startsWith('/')) {
-        const handled = await handleAdminCommand(text, remoteJid);
-        if (handled) return;
+        if (isAdminMsg && text.startsWith('/')) {
+          const handled = await handleAdminCommand(text, remoteJid);
+          if (handled) return;
+        }
+
+        if (fromMe) return;   // botun öz mesajları (admin əmri deyilsə) — keç
+        if (isGroup) return;  // qrupdakı adi söhbətə qarışma
+
+        await handleMemberMessage(senderJid, msg.pushName || 'Üzv', text);
+      } catch (e) {
+        console.log('Mesaj emalı xətası:', e.message);
       }
+    });
 
-      if (fromMe) return;   // botun öz mesajları (admin əmri deyilsə) — keç
-      if (isGroup) return;  // qrupdakı adi söhbətə qarışma
-
-      await handleMemberMessage(senderJid, msg.pushName || 'Üzv', text);
-    } catch (e) {
-      console.log('Mesaj emalı xətası:', e.message);
-    }
-  });
+  } catch (e) {
+    console.error('❌ startBot daxili xətası:', e.message);
+    isStarting = false;
+    scheduleReconnect(5000);
+  }
 }
 
 // =====================================================
@@ -621,5 +663,5 @@ schedule.scheduleJob({ dayOfWeek: 5, hour: 12, minute: 0, tz: 'Asia/Baku' }, () 
 schedule.scheduleJob({ dayOfWeek: 4, hour: 10, minute: 0, tz: 'Asia/Baku' }, () => sendReminder().catch(e => console.log('Xatırlatma xətası:', e.message)));         // Cümə axşamı 10:00 — xatırlatma
 schedule.scheduleJob({ dayOfWeek: 4, hour: 22, minute: 0, tz: 'Asia/Baku' }, () => sendWeeklyReport().catch(e => console.log('Hesabat xətası:', e.message)));        // Cümə axşamı 22:00 — hesabat
 
-startBot().catch((e) => { console.error('❌ startBot xətası:', e); scheduleReconnect(); });
+startBot().catch((e) => { console.error('❌ startBot xətası:', e); isStarting = false; scheduleReconnect(); });
 console.log('🚀 Bot başladılır...');
